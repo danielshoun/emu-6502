@@ -307,7 +307,7 @@ impl CPU {
 
     fn jmp_indirect(&mut self) {
         let addr_ref = self.mem_read_u16(self.program_counter);
-        let mut addr;
+        let addr;
         if addr_ref & 0x00FF == 0x00FF {
             let lo = self.mem_read(addr_ref);
             let hi = self.mem_read(addr_ref & 0xFF00);
@@ -783,5 +783,17 @@ impl CPU {
         self.load(program);
         self.reset();
         self.run();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_cpu() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xA2, 0xFF, 0xE8, 0x00]);
+        assert_eq!(cpu.register_x, 0);
     }
 }
