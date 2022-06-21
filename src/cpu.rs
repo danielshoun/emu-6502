@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use crate::opcodes;
+use bitflags::bitflags;
 
+#[derive(PartialEq)]
 pub enum AddressingMode {
     Immediate,
     ZeroPage,
@@ -46,10 +48,10 @@ impl CPU {
             register_a: 0,
             register_x: 0,
             register_y: 0,
-            status: 0,
-            stack_pointer: 0,
+            status: CpuFlags::from_bits_truncate(0b100100),
+            stack_pointer: STACK_RESET,
             program_counter: 0,
-            memory: [u8; 0xFFFF],
+            memory: [0; 0xFFFF],
         }
     }
 
@@ -74,6 +76,29 @@ impl CPU {
         self.mem_write(pos + 1, hi);
     }
 
+    fn stack_push(&mut self, data: u8) {
+        self.mem_write((STACK as u16) + self.stack_pointer as u16, data);
+        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+    }
+
+    fn stack_pop(&mut self) -> u8 {
+        self.stack_pointer = self.stack_pointer.wrapping_add(1);
+        self.mem_read((STACK as u16) + self.stack_pointer as u16)
+    }
+
+    fn stack_push_u16(&mut self, data: u16) {
+        let hi = (data >> 8) as u8;
+        let lo = (data & 0xFF) as u8;
+        self.stack_push(hi);
+        self.stack_push(lo);
+    }
+
+    fn stack_pop_u16(&mut self) -> u16 {
+        let lo = self.stack_pop() as u16;
+        let hi = self.stack_pop() as u16;
+        hi << 8 | lo
+    }
+
     pub fn load(&mut self, program: Vec<u8>) {
         self.memory[0x8000..(0x8000 + program.len())].copy_from_slice(&program[..]);
         self.mem_write_u16(0xFFFC, 0x8000);
@@ -83,8 +108,8 @@ impl CPU {
         self.register_a = 0;
         self.register_x = 0;
         self.register_y = 0;
-        self.status = 0;
-        self.stack_pointer = 0;
+        self.status = CpuFlags::from_bits_truncate(0b100100);
+        self.stack_pointer = STACK_RESET;
         self.program_counter = self.mem_read_u16(0xFFFC);
     }
 
@@ -191,7 +216,7 @@ impl CPU {
     }
 
     fn asl(&mut self, mode: &AddressingMode) {
-        if mode == AddressingMode::NoneAddressing {
+        if mode == &AddressingMode::NoneAddressing {
             if self.register_a >> 7 == 1 {
                 self.status.insert(CpuFlags::CARRY);
             } else {
@@ -201,7 +226,7 @@ impl CPU {
             self.set_register_a(self.register_a << 1);
         } else {
             let addr = self.get_operand_address(&mode);
-            let value = self.mem_read(addr);
+            let mut value = self.mem_read(addr);
 
             if value >> 7 == 1 {
                 self.status.insert(CpuFlags::CARRY);
@@ -209,6 +234,7 @@ impl CPU {
                 self.status.remove(CpuFlags::CARRY);
             }
 
+            value = value << 1;
             self.mem_write(addr, value);
             self.update_zero_and_negative_flags(value);
         }
@@ -255,9 +281,91 @@ impl CPU {
         let addr = self.get_operand_address(&mode);
         let mut value = self.mem_read(addr);
 
-        value = value.wrapping_sub((1));
+        value = value.wrapping_sub(1);
         self.mem_write(addr, value);
         self.update_zero_and_negative_flags(value);
+    }
+
+    fn eor(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+        self.set_register_a(value ^ self.register_a);
+    }
+
+    fn inc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let mut value = self.mem_read(addr);
+
+        value = value.wrapping_add(1);
+        self.mem_write(addr, value);
+        self.update_zero_and_negative_flags(value);
+    }
+
+    fn jmp_absolute(&mut self) {
+        self.program_counter = self.mem_read_u16(self.program_counter);
+    }
+
+    fn jmp_indirect(&mut self) {
+        let addr_ref = self.mem_read_u16(self.program_counter);
+        let mut addr;
+        if addr_ref & 0x00FF == 0x00FF {
+            let lo = self.mem_read(addr_ref);
+            let hi = self.mem_read(addr_ref & 0xFF00);
+            addr = (hi as u16) << 8 | (lo as u16);
+        } else {
+            addr = self.mem_read_u16(addr_ref);
+        }
+        self.program_counter = addr;
+    }
+
+    fn jsr(&mut self) {
+        self.stack_push_u16(self.program_counter + 1);
+        self.program_counter = self.mem_read_u16(self.program_counter);
+    }
+
+    fn lda(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+        self.set_register_a(value);
+    }
+
+    fn ldx(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+        self.register_x = value;
+        self.update_zero_and_negative_flags(value);
+    }
+
+    fn ldy(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+        self.register_y = value;
+        self.update_zero_and_negative_flags(value);
+    }
+
+    fn lsr(&mut self, mode: &AddressingMode) {
+        if mode == &AddressingMode::NoneAddressing {
+            if self.register_a & 1 == 1 {
+                self.status.insert(CpuFlags::CARRY);
+            } else {
+                self.status.remove(CpuFlags::CARRY);
+            }
+
+            self.set_register_a(self.register_a >> 1);
+        } else {
+            let addr = self.get_operand_address(&mode);
+            let mut value = self.mem_read(addr);
+
+            if value & 1 == 1 {
+                self.status.insert(CpuFlags::CARRY);
+            } else {
+                self.status.remove(CpuFlags::CARRY);
+            }
+
+            value = value >> 1;
+            self.mem_write(addr, value);
+            self.update_zero_and_negative_flags(value);
+        }
     }
 
     pub fn run(&mut self) {
@@ -327,11 +435,11 @@ impl CPU {
                 }
                 // CPX
                 0xE0 | 0xE4 | 0xEC => {
-                    self.compare(&opcode.mode, self.register_x)
+                    self.compare(&opcode.mode, self.register_x);
                 }
                 // CPY
                 0xC0 | 0xC4 | 0xCC => {
-                    self.compare(&opcode.mode, self.register_y)
+                    self.compare(&opcode.mode, self.register_y);
                 }
                 // DEC
                 0xC6 | 0xD6 | 0xCE | 0xDE => {
@@ -339,50 +447,69 @@ impl CPU {
                 }
                 // EOR
                 0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51 => {
-
+                    self.eor(&opcode.mode);
                 }
                 // CLC
-                0x18 => return,
+                0x18 => {
+                    self.status.remove(CpuFlags::CARRY);
+                },
                 // SEC
-                0x38 => return,
+                0x38 => {
+                    self.status.insert(CpuFlags::CARRY);
+                },
                 // CLI
-                0x58 => return,
+                0x58 => {
+                    self.status.remove(CpuFlags::INTERRUPT_DISABLE);
+                },
                 // SEI
-                0x78 => return,
+                0x78 => {
+                    self.status.insert(CpuFlags::INTERRUPT_DISABLE);
+                },
                 // CLV
-                0xB8 => return,
+                0xB8 => {
+                    self.status.remove(CpuFlags::OVERFLOW);
+                },
                 // CLD
-                0xD8 => return,
+                0xD8 => {
+                    self.status.remove(CpuFlags::DECIMAL_MODE);
+                },
                 // SED
-                0xF8 => return,
+                0xF8 => {
+                    self.status.insert(CpuFlags::DECIMAL_MODE);
+                },
                 // INC
                 0xE6 | 0xF6 | 0xEE | 0xFE => {
-
+                    self.inc(&opcode.mode);
                 }
                 // JMP
-                0x4C | 0x6C => {
-
+                0x4C => {
+                    self.jmp_absolute();
+                }
+                0x6C => {
+                    self.jmp_indirect();
                 }
                 // JSR
-                0x20 => return,
+                0x20 => {
+                    self.jsr();
+                },
                 // LDA
                 0xA9 | 0xA5 | 0xB5 | 0xAD | 0xBD | 0xB9 | 0xA1 | 0xB1 => {
-
+                    self.lda(&opcode.mode);
                 }
                 // LDX
                 0xA2 | 0xA6 | 0xB6 | 0xAE | 0xBE => {
-
+                    self.ldx(&opcode.mode);
                 }
                 // LDY
                 0xA0 | 0xA4 | 0xB4 | 0xAC | 0xBC => {
-
+                    self.ldy(&opcode.mode);
                 }
                 // LSR
                 0x4A | 0x46 | 0x56 | 0x4E | 0x5E => {
-
+                    self.lsr(&opcode.mode);
                 }
                 // NOP
-                0xEA => return,
+                0xEA => {},
                 // ORA
                 0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 => {
 
