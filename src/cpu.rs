@@ -368,6 +368,50 @@ impl CPU {
         }
     }
 
+    fn ora(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+        self.set_register_a(value | self.register_a);
+    }
+
+    fn tax(&mut self) {
+        self.register_x = self.register_a;
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn txa(&mut self) {
+        self.set_register_a(self.register_x);
+    }
+
+    fn dex(&mut self) {
+        self.register_x = self.register_x.wrapping_sub(1);
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn inx(&mut self) {
+        self.register_x = self.register_x.wrapping_add(1);
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn tay(&mut self) {
+        self.register_y = self.register_a;
+        self.update_zero_and_negative_flags(self.register_y);
+    }
+
+    fn tya(&mut self) {
+        self.set_register_a(self.register_y);
+    }
+
+    fn dey(&mut self) {
+        self.register_y = self.register_y.wrapping_sub(1);
+        self.update_zero_and_negative_flags(self.register_y);
+    }
+
+    fn iny(&mut self) {
+        self.register_y = self.register_y.wrapping_add(1);
+        self.update_zero_and_negative_flags(self.register_y);
+    }
+
     pub fn run(&mut self) {
         let ref opcodes: HashMap<u8, &'static opcodes::OpCode> = *opcodes::OPCODES_MAP;
 
@@ -512,24 +556,40 @@ impl CPU {
                 0xEA => {},
                 // ORA
                 0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 => {
-
+                    self.ora(&opcode.mode);
                 }
                 // TAX
-                0xAA => return,
+                0xAA => {
+                    self.tax();
+                },
                 // TXA
-                0x8A => return,
+                0x8A => {
+                    self.txa();
+                },
                 // DEX
-                0xCA => return,
+                0xCA => {
+                    self.dex();
+                },
                 // INX
-                0xE8 => return,
+                0xE8 => {
+                    self.inx();
+                },
                 // TAY
-                0xA8 => return,
+                0xA8 => {
+                    self.tay();
+                },
                 // TYA
-                0x98 => return,
+                0x98 => {
+                    self.tya();
+                }
                 // DEY
-                0x88 => return,
+                0x88 => {
+                    self.dey();
+                },
                 // INY
-                0xC8 => return,
+                0xC8 => {
+                    self.iny();
+                },
                 // ROL
                 0x2A | 0x26 | 0x36 | 0x2E | 0x3E => {
 
