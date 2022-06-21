@@ -412,6 +412,130 @@ impl CPU {
         self.update_zero_and_negative_flags(self.register_y);
     }
 
+    fn rol(&mut self, mode: &AddressingMode) {
+        let carry = self.status.contains(CpuFlags::CARRY);
+        let mut value;
+        let mut addr = 0;
+        if mode == &AddressingMode::NoneAddressing {
+            value = self.register_a;
+        } else {
+            addr = self.get_operand_address(&mode);
+            value = self.mem_read(addr);
+        }
+
+        if value >> 7 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        value = value << 1;
+        if carry {
+            value = value | 1;
+        }
+
+        if mode == &AddressingMode::NoneAddressing {
+            self.set_register_a(value);
+        } else {
+            self.mem_write(addr, value);
+            self.update_zero_and_negative_flags(value);
+        }
+    }
+
+    fn ror(&mut self, mode: &AddressingMode) {
+        let carry = self.status.contains(CpuFlags::CARRY);
+        let mut value;
+        let mut addr = 0;
+        if mode == &AddressingMode::NoneAddressing {
+            value = self.register_a;
+        } else {
+            addr = self.get_operand_address(&mode);
+            value = self.mem_read(addr);
+        }
+
+        if value & 1 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        value = value >> 1;
+        if carry {
+            value = value | 0b10000000;
+        }
+
+        if mode == &AddressingMode::NoneAddressing {
+            self.set_register_a(value);
+        } else {
+            self.mem_write(addr, value);
+            self.update_zero_and_negative_flags(value);
+        }
+    }
+
+    fn rti(&mut self) {
+        self.status.bits = self.stack_pop();
+        self.status.remove(CpuFlags::BREAK);
+        self.status.insert(CpuFlags::BREAK2);
+        self.program_counter = self.stack_pop_u16();
+    }
+
+    fn rts(&mut self) {
+        self.program_counter = self.stack_pop_u16() + 1;
+    }
+
+    fn sbc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+
+        self.add_to_register_a(((value as i8).wrapping_neg().wrapping_sub(1)) as u8);
+    }
+
+    fn sta(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        self.mem_write(addr, self.register_a);
+    }
+
+    fn txs(&mut self) {
+        self.stack_pointer = self.register_x;
+    }
+
+    fn tsx(&mut self) {
+        self.register_x = self.stack_pointer;
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn pha(&mut self) {
+        self.stack_push(self.register_a);
+    }
+
+    fn pla(&mut self) {
+        let value = self.stack_pop();
+        self.set_register_a(value);
+    }
+
+    fn php(&mut self) {
+        let mut flags = self.status.clone();
+        flags.insert(CpuFlags::BREAK);
+        flags.insert(CpuFlags::BREAK2);
+        self.stack_push(flags.bits());
+    }
+
+    fn plp(&mut self) {
+        self.status.bits = self.stack_pop();
+        self.status.remove(CpuFlags::BREAK);
+        self.status.insert(CpuFlags::BREAK2);
+    }
+
+    fn stx(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        self.mem_write(addr, self.register_x);
+    }
+
+    fn sty(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        self.mem_write(addr, self.register_y)
+    }
+
     pub fn run(&mut self) {
         let ref opcodes: HashMap<u8, &'static opcodes::OpCode> = *opcodes::OPCODES_MAP;
 
@@ -592,43 +716,59 @@ impl CPU {
                 },
                 // ROL
                 0x2A | 0x26 | 0x36 | 0x2E | 0x3E => {
-
+                    self.rol(&opcode.mode);
                 }
                 // ROR
                 0x6A | 0x66 | 0x76 | 0x6E | 0x7E => {
-
+                    self.ror(&opcode.mode);
                 }
                 // RTI
-                0x40 => return,
+                0x40 => {
+                    self.rti();
+                },
                 // RTS
-                0x60 => return,
+                0x60 => {
+                    self.rts();
+                },
                 // SBC
                 0xE9 | 0xE5 | 0xF5 | 0xED | 0xFD | 0xF9 | 0xE1 | 0xF1 => {
-
+                    self.sbc(&opcode.mode);
                 }
                 // STA
                 0x85 | 0x95 | 0x8D | 0x9D | 0x99 | 0x81 | 0x91 => {
-
+                    self.sta(&opcode.mode);
                 }
                 // TXS
-                0x9A => return,
+                0x9A => {
+                    self.txs();
+                },
                 // TSX
-                0xBA => return,
+                0xBA => {
+                    self.tsx();
+                },
                 // PHA
-                0x48 => return,
+                0x48 => {
+                    self.pha();
+                },
                 // PLA
-                0x68 => return,
+                0x68 => {
+                    self.pla();
+                },
                 // PHP
-                0x08 => return,
+                0x08 => {
+                    self.php();
+                },
                 // PLP
-                0x28 => return,
+                0x28 => {
+                    self.plp();
+                },
                 // STX
                 0x86 | 0x96 | 0x8E => {
-
+                    self.stx(&opcode.mode);
                 }
                 // STY
                 0x84 | 0x94 | 0x8C => {
-
+                    self.sty(&opcode.mode);
                 }
                 _ => {}
             }
