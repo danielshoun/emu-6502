@@ -14,11 +14,27 @@ pub enum AddressingMode {
     NoneAddressing
 }
 
+bitflags! {
+    pub struct CpuFlags: u8 {
+        const CARRY = 0b00000001;
+        const ZERO = 0b00000010;
+        const INTERRUPT_DISABLE = 0b00000100;
+        const DECIMAL_MODE = 0b00001000;
+        const BREAK = 0b00010000;
+        const BREAK2 = 0b00100000;
+        const OVERFLOW = 0b01000000;
+        const NEGATIVE = 0b10000000;
+    }
+}
+
+const STACK: u16 = 0x0100;
+const STACK_RESET: u8 = 0xfd;
+
 pub struct CPU {
     pub register_a: u8,
     pub register_x: u8,
     pub register_y: u8,
-    pub status: u8,
+    pub status: CpuFlags,
     pub stack_pointer: u8,
     pub program_counter: u16,
     memory: [u8; 0xFFFF],
@@ -119,12 +135,129 @@ impl CPU {
         }
     }
 
-    fn ora(&mut self, mode: &AddressingMode) {
+    fn update_zero_and_negative_flags(&mut self, result: u8) {
+        if result == 0 {
+            self.status.insert(CpuFlags::ZERO);
+        } else {
+            self.status.remove(CpuFlags::ZERO);
+        }
+
+        if result & 0b1000000 != 0 {
+            self.status.insert(CpuFlags::NEGATIVE);
+        } else {
+            self.status.remove(CpuFlags::NEGATIVE);
+        }
+    }
+
+    fn set_register_a(&mut self, value: u8) {
+        self.register_a = value;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    fn add_to_register_a(&mut self, value: u8) {
+        let mut sum = self.register_a as u16 + value as u16;
+        if self.status.contains(CpuFlags::CARRY) {
+            sum += 1 as u16;
+        }
+
+        if sum > 0xFF {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        let result = sum as u8;
+        if (value ^ result) & (result ^ self.register_a) & 0x80 != 0 {
+            self.status.insert(CpuFlags::OVERFLOW);
+        } else {
+            self.status.remove(CpuFlags::OVERFLOW);
+        }
+
+        self.set_register_a(result);
+    }
+
+    fn adc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(&mode);
         let value = self.mem_read(addr);
 
-        self.register_a = self.register_a | value;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.add_to_register_a(value);
+    }
+
+    fn and(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+
+        self.set_register_a(value & self.register_a)
+    }
+
+    fn asl(&mut self, mode: &AddressingMode) {
+        if mode == AddressingMode::NoneAddressing {
+            if self.register_a >> 7 == 1 {
+                self.status.insert(CpuFlags::CARRY);
+            } else {
+                self.status.remove(CpuFlags::CARRY);
+            }
+
+            self.set_register_a(self.register_a << 1);
+        } else {
+            let addr = self.get_operand_address(&mode);
+            let value = self.mem_read(addr);
+
+            if value >> 7 == 1 {
+                self.status.insert(CpuFlags::CARRY);
+            } else {
+                self.status.remove(CpuFlags::CARRY);
+            }
+
+            self.mem_write(addr, value);
+            self.update_zero_and_negative_flags(value);
+        }
+
+    }
+
+    fn bit(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+
+        if self.register_a & value == 0 {
+            self.status.insert(CpuFlags::ZERO);
+        } else {
+            self.status.remove(CpuFlags::ZERO);
+        }
+
+        self.status.set(CpuFlags::NEGATIVE, value & 0b10000000 > 0);
+        self.status.set(CpuFlags::OVERFLOW, value & 0b01000000 > 0);
+    }
+
+    fn branch(&mut self, condition: bool) {
+        if condition {
+            let jump_amt: i8 = self.mem_read(self.program_counter) as i8;
+            let jump_addr = self.program_counter.wrapping_add(1).wrapping_add(jump_amt as u16);
+
+            self.program_counter = jump_addr;
+        }
+    }
+
+    fn compare(&mut self, mode: &AddressingMode, register: u8) {
+        let addr = self.get_operand_address(&mode);
+        let value = self.mem_read(addr);
+
+        if value <= register {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        self.update_zero_and_negative_flags(register.wrapping_sub(value));
+    }
+
+    fn dec(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(&mode);
+        let mut value = self.mem_read(addr);
+
+        value = value.wrapping_sub((1));
+        self.mem_write(addr, value);
+        self.update_zero_and_negative_flags(value);
     }
 
     pub fn run(&mut self) {
@@ -140,53 +273,69 @@ impl CPU {
             match code {
                 // ADC
                 0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => {
-
+                    self.adc(&opcode.mode);
                 }
                 // AND
                 0x29 | 0x25 | 0x35 | 0x2D | 0x3D | 0x39 | 0x21 | 0x31 => {
-
+                    self.and(&opcode.mode);
                 }
                 // ASL
                 0x0A | 0x06 | 0x16 | 0x0E | 0x1E => {
-
+                    self.asl(&opcode.mode);
                 }
                 // BIT
                 0x24 | 0x2C => {
-
+                    self.bit(&opcode.mode);
                 }
                 // BPL
-                0x10 => return,
+                0x10 => {
+                    self.branch(!self.status.contains(CpuFlags::NEGATIVE));
+                },
                 // BMI
-                0x30 => return,
+                0x30 => {
+                    self.branch(self.status.contains(CpuFlags::NEGATIVE));
+                },
                 // BVC
-                0x50 => return,
+                0x50 => {
+                    self.branch(!self.status.contains(CpuFlags::OVERFLOW));
+                },
                 // BVS
-                0x70 => return,
+                0x70 => {
+                    self.branch(self.status.contains(CpuFlags::OVERFLOW));
+                },
                 // BCC
-                0x90 => return,
+                0x90 => {
+                    self.branch(!self.status.contains(CpuFlags::CARRY));
+                },
                 // BCS
-                0xB0 => return,
+                0xB0 => {
+                    self.branch(self.status.contains(CpuFlags::CARRY));
+                },
                 // BNE
-                0xD0 => return,
+                0xD0 => {
+                    self.branch(!self.status.contains(CpuFlags::ZERO));
+                },
                 // BEQ
-                0xF0 => return,
+                0xF0 => {
+                    self.branch(self.status.contains(CpuFlags::ZERO));
+                },
                 // BRK
                 0x00 => return,
                 // CMP
                 0xC9 | 0xC5 | 0xD5 | 0xCD | 0xDD | 0xD9 | 0xC1 | 0xD1 => {
-
+                    self.compare(&opcode.mode, self.register_a);
                 }
                 // CPX
                 0xE0 | 0xE4 | 0xEC => {
-
+                    self.compare(&opcode.mode, self.register_x)
                 }
                 // CPY
                 0xC0 | 0xC4 | 0xCC => {
-
+                    self.compare(&opcode.mode, self.register_y)
                 }
                 // DEC
                 0xC6 | 0xD6 | 0xCE | 0xDE => {
-
+                    self.dec(&opcode.mode);
                 }
                 // EOR
                 0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51 => {
